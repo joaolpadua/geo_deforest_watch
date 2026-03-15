@@ -1,71 +1,41 @@
-"""
-Arquivo principal do pipeline.
+import pandas as pd
 
-Responsável por orquestrar todo o fluxo do projeto:
-
-1) Carregar AOI
-2) Gerar grid adaptativo
-3) Buscar imagens Sentinel via STAC
-4) Calcular NDVI
-5) Calcular NDVI médio por célula do grid
-"""
-
-# ---------------------------------------------------------
-# IMPORTS
-# ---------------------------------------------------------
-
-# src/ingestion/aoi_loader.py
-# carrega o polígono da área de interesse
 from src.ingestion.aoi_loader import load_aoi
-
-# src/utils/geometry_utils.py
-# gera o grid adaptativo sobre o polígono
 from src.utils.geometry_utils import generate_adaptive_grid
-
-# src/satellite/stac_client.py
-# consulta imagens Sentinel no catálogo STAC
 from src.satellite.stac_client import search_sentinel_items
-
-# src/indices/ndvi_calculator.py
-# calcula NDVI a partir das bandas RED e NIR
 from src.indices.ndvi_calculator import calculate_ndvi
-
-# src/analysis/zonal_ndvi.py
-# calcula NDVI médio por célula do grid
 from src.analysis.zonal_ndvi import compute_zonal_ndvi
 
 
 def main():
 
-    # ---------------------------------------------------------
-    # 1️⃣ CARREGAR ÁREA DE INTERESSE (AOI)
-    # ---------------------------------------------------------
+    # --------------------------------------------------
+    # 1️⃣ Carregar AOI (Área de Interesse)
+    # --------------------------------------------------
+    # Arquivo KML contendo o polígono da área que queremos analisar
 
-    # caminho do arquivo da área de interesse
-    aoi_path = "data/raw/aoi_amazonia.kml"
-
-    # carregar o polígono usando geopandas
-    aoi = load_aoi(aoi_path)
+    aoi = load_aoi("data/raw/aoi_amazonia.kml")
 
     print(aoi)
 
 
-    # ---------------------------------------------------------
-    # 2️⃣ GERAR GRID ADAPTATIVO
-    # ---------------------------------------------------------
+    # --------------------------------------------------
+    # 2️⃣ Gerar grid espacial adaptativo
+    # --------------------------------------------------
+    # O polígono é dividido em várias células menores.
+    # Cada célula será analisada individualmente.
 
-    # subdivide o polígono em células menores
-    # cada célula será usada como unidade de análise
     grid = generate_adaptive_grid(aoi)
 
     print(f"Grid generated with {len(grid)} cells")
 
 
-    # ---------------------------------------------------------
-    # 3️⃣ BUSCAR IMAGENS SENTINEL
-    # ---------------------------------------------------------
+    # --------------------------------------------------
+    # 3️⃣ Buscar imagens Sentinel no STAC
+    # --------------------------------------------------
+    # Planetary Computer retorna todas as imagens Sentinel
+    # que intersectam a área dentro do intervalo de datas.
 
-    # consulta o catálogo STAC do Planetary Computer
     items = search_sentinel_items(
         aoi,
         start_date="2023-01-01",
@@ -74,71 +44,108 @@ def main():
 
     print("Sentinel images found:", len(items))
 
-
-    # ---------------------------------------------------------
-    # 4️⃣ VERIFICAR SE EXISTEM IMAGENS
-    # ---------------------------------------------------------
-
     if len(items) == 0:
-
         print("No Sentinel images found")
-
         return
 
 
-    # ---------------------------------------------------------
-    # 5️⃣ PROCESSAR IMAGENS
-    # ---------------------------------------------------------
+    # --------------------------------------------------
+    # 4️⃣ Lista para armazenar resultados temporais
+    # --------------------------------------------------
+    # Cada imagem vai gerar NDVI por célula.
+    # Depois juntaremos tudo em um dataset.
 
-    # percorremos as imagens até encontrar uma válida
-    # (sem nuvem excessiva e com interseção com o AOI)
+    all_results = []
+
+
+    # --------------------------------------------------
+    # 5️⃣ Loop nas imagens Sentinel
+    # --------------------------------------------------
 
     for item in items:
 
+        # data da imagem
+        date = item.properties["datetime"][:10]
+
+        print(f"\nProcessing image: {date}")
+
+        # --------------------------------------------------
         # calcular NDVI
+        # --------------------------------------------------
+
         result = calculate_ndvi(item, aoi)
 
-        # se a função retornar None significa:
-        # - imagem não intersecta AOI
-        # ou
-        # - nuvem acima do limite permitido
+        # imagem pode ser descartada por:
+        # - nuvem
+        # - não intersectar AOI
         if result is None:
 
-            print("Image does not intersect AOI")
-
+            print("Image skipped (clouds or no intersection)")
             continue
 
-
-        # a função retorna:
-        # ndvi_array + transform espacial
         ndvi, transform, raster_crs = result
 
         print("NDVI calculated:", ndvi.shape)
 
 
-
-
-
-        # ---------------------------------------------------------
-        # 6️⃣ CALCULAR NDVI MÉDIO POR CÉLULA
-        # ---------------------------------------------------------
+        # --------------------------------------------------
+        # calcular NDVI médio por célula (zonal statistics)
+        # --------------------------------------------------
 
         zonal_result = compute_zonal_ndvi(
             ndvi,
             transform,
             grid,
-            raster_crs
+            raster_crs,
         )
 
-        # mostrar primeiras células
-        print(zonal_result.head())
+
+        # --------------------------------------------------
+        # adicionar data
+        # --------------------------------------------------
+
+        zonal_result["date"] = date
 
 
-        # parar após primeira imagem válida
-        # (isso é apenas para testes iniciais)
-        break
+        # --------------------------------------------------
+        # manter apenas colunas necessárias
+        # --------------------------------------------------
+
+        zonal_result = zonal_result[
+            ["cell_id", "date", "ndvi_mean"]
+        ]
+
+
+        # armazenar resultado
+        all_results.append(zonal_result)
+
+
+    # --------------------------------------------------
+    # 6️⃣ Construir dataset temporal completo
+    # --------------------------------------------------
+
+    if len(all_results) == 0:
+
+        print("No valid NDVI results")
+        return
+
+    dataset = pd.concat(all_results)
+
+    print("\nDataset preview:")
+    print(dataset.head())
+
+    print("\nTotal records:", len(dataset))
+
+
+    # --------------------------------------------------
+    # 7️⃣ Salvar dataset
+    # --------------------------------------------------
+
+    dataset.to_csv("ndvi_timeseries.csv", index=False)
+
+    print("\nDataset saved: ndvi_timeseries.csv")
 
 
 if __name__ == "__main__":
-
     main()
+
