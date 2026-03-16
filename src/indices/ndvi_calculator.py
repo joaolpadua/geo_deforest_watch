@@ -15,6 +15,7 @@ import logging
 import numpy as np
 import rasterio
 from rasterio.mask import mask
+from src.utils.raster_cache import get_cached_raster
 
 # logger para mensagens do pipeline
 logger = logging.getLogger(__name__)
@@ -82,13 +83,18 @@ def calculate_ndvi(item, aoi, cloud_threshold=0.2):
     nir_url = item.assets["B08"].href
     scl_url = item.assets["SCL"].href
 
+    # garantir cache local
+    red_path = get_cached_raster(red_url)
+    nir_path = get_cached_raster(nir_url)
+    scl_path = get_cached_raster(scl_url)
+
     try:
 
         # ---------------------------------------------------------
         # 1️⃣ VERIFICAR COBERTURA DE NUVEM
         # ---------------------------------------------------------
 
-        with rasterio.open(scl_url) as scl_src:
+        with rasterio.open(scl_path) as scl_src:
 
             # reprojetar AOI para o CRS do raster
             aoi_proj = aoi.to_crs(scl_src.crs)
@@ -121,7 +127,7 @@ def calculate_ndvi(item, aoi, cloud_threshold=0.2):
         # 2️⃣ ABRIR BANDAS RED E NIR
         # ---------------------------------------------------------
 
-        with rasterio.open(red_url) as red_src, rasterio.open(nir_url) as nir_src:
+        with rasterio.open(red_path) as red_src, rasterio.open(nir_path) as nir_src:
 
             # reprojetar AOI para CRS das bandas
             aoi_proj = aoi.to_crs(red_src.crs)

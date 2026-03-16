@@ -1,22 +1,33 @@
-"""
-Cálculo de NDVI médio por célula do grid.
-"""
-
 import numpy as np
 from rasterio.features import geometry_mask
 
 
 def compute_zonal_ndvi(ndvi, transform, grid, raster_crs):
+
     """
     Calcula NDVI médio para cada célula do grid.
+
+    Parâmetros
+    ----------
+    ndvi : numpy array
+        Raster NDVI
+
+    transform : affine
+        Transform espacial do raster
+
+    grid : GeoDataFrame
+        Grid de células
+
+    raster_crs : CRS
+        Sistema de coordenadas do raster
     """
 
-    # reprojetar grid para o CRS do raster
+    # reprojetar grid para CRS do raster
     grid_proj = grid.to_crs(raster_crs)
 
     results = []
 
-    for _, row in grid_proj.iterrows():
+    for row in grid_proj.itertuples():
 
         geom = [row.geometry]
 
@@ -36,7 +47,6 @@ def compute_zonal_ndvi(ndvi, transform, grid, raster_crs):
 
         results.append(mean_ndvi)
 
-    grid_result = grid_proj.copy()
-    grid_result["ndvi_mean"] = results
+    grid_proj["ndvi_mean"] = results
 
-    return grid_result
+    return grid_proj

@@ -1,3 +1,4 @@
+import time
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor
 
@@ -17,6 +18,7 @@ def process_image(item, aoi, grid):
     2) executa zonal statistics no grid
     3) retorna dataframe com cell_id, date, ndvi_mean
     """
+    start = time.perf_counter() #medir tempo de processamento da imagem
 
     # data da imagem
     date = item.properties["datetime"][:10]
@@ -49,11 +51,15 @@ def process_image(item, aoi, grid):
     zonal_result = zonal_result[
         ["cell_id", "date", "ndvi_mean"]
     ]
+    end = time.perf_counter() #medir tempo de processamento da imagem
+    print(f"Image {date} processed in {round(end-start,2)} seconds")
 
     return zonal_result
 
 
 def main():
+
+    pipeline_start = time.perf_counter() #medir tempo total do pipeline
 
     # --------------------------------------------------
     # 1️⃣ carregar AOI
@@ -136,6 +142,13 @@ def main():
 
     print("\nDataset saved: ndvi_timeseries.csv")
 
+
+    # --------------------------------------------------
+    #  medir tempo total do pipeline
+    # --------------------------------------------------    
+    pipeline_end = time.perf_counter()
+
+    print("\nPipeline runtime:", round(pipeline_end - pipeline_start, 2), "seconds")
 
 if __name__ == "__main__":
     main()
