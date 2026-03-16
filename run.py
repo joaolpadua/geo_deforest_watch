@@ -1,4 +1,5 @@
 import pandas as pd
+from concurrent.futures import ThreadPoolExecutor
 
 from src.ingestion.aoi_loader import load_aoi
 from src.utils.geometry_utils import generate_adaptive_grid
@@ -7,12 +8,56 @@ from src.indices.ndvi_calculator import calculate_ndvi
 from src.analysis.zonal_ndvi import compute_zonal_ndvi
 
 
+def process_image(item, aoi, grid):
+    """
+    Processa uma única imagem Sentinel.
+
+    Etapas:
+    1) calcula NDVI
+    2) executa zonal statistics no grid
+    3) retorna dataframe com cell_id, date, ndvi_mean
+    """
+
+    # data da imagem
+    date = item.properties["datetime"][:10]
+
+    print(f"\nProcessing image: {date}")
+
+    # calcular NDVI
+    result = calculate_ndvi(item, aoi)
+
+    if result is None:
+        print("Image skipped (clouds or no intersection)")
+        return None
+
+    ndvi, transform, raster_crs = result
+
+    print("NDVI calculated:", ndvi.shape)
+
+    # calcular NDVI médio por célula
+    zonal_result = compute_zonal_ndvi(
+        ndvi,
+        transform,
+        grid,
+        raster_crs,
+    )
+
+    # adicionar data
+    zonal_result["date"] = date
+
+    # manter apenas colunas necessárias
+    zonal_result = zonal_result[
+        ["cell_id", "date", "ndvi_mean"]
+    ]
+
+    return zonal_result
+
+
 def main():
 
     # --------------------------------------------------
-    # 1️⃣ Carregar AOI (Área de Interesse)
+    # 1️⃣ carregar AOI
     # --------------------------------------------------
-    # Arquivo KML contendo o polígono da área que queremos analisar
 
     aoi = load_aoi("data/raw/aoi_amazonia.kml")
 
@@ -20,10 +65,8 @@ def main():
 
 
     # --------------------------------------------------
-    # 2️⃣ Gerar grid espacial adaptativo
+    # 2️⃣ gerar grid adaptativo
     # --------------------------------------------------
-    # O polígono é dividido em várias células menores.
-    # Cada célula será analisada individualmente.
 
     grid = generate_adaptive_grid(aoi)
 
@@ -31,10 +74,8 @@ def main():
 
 
     # --------------------------------------------------
-    # 3️⃣ Buscar imagens Sentinel no STAC
+    # 3️⃣ buscar imagens Sentinel
     # --------------------------------------------------
-    # Planetary Computer retorna todas as imagens Sentinel
-    # que intersectam a área dentro do intervalo de datas.
 
     items = search_sentinel_items(
         aoi,
@@ -50,78 +91,28 @@ def main():
 
 
     # --------------------------------------------------
-    # 4️⃣ Lista para armazenar resultados temporais
+    # 4️⃣ processar imagens em paralelo
     # --------------------------------------------------
-    # Cada imagem vai gerar NDVI por célula.
-    # Depois juntaremos tudo em um dataset.
 
     all_results = []
 
+    with ThreadPoolExecutor(max_workers=4) as executor:
 
-    # --------------------------------------------------
-    # 5️⃣ Loop nas imagens Sentinel
-    # --------------------------------------------------
-
-    for item in items:
-
-        # data da imagem
-        date = item.properties["datetime"][:10]
-
-        print(f"\nProcessing image: {date}")
-
-        # --------------------------------------------------
-        # calcular NDVI
-        # --------------------------------------------------
-
-        result = calculate_ndvi(item, aoi)
-
-        # imagem pode ser descartada por:
-        # - nuvem
-        # - não intersectar AOI
-        if result is None:
-
-            print("Image skipped (clouds or no intersection)")
-            continue
-
-        ndvi, transform, raster_crs = result
-
-        print("NDVI calculated:", ndvi.shape)
-
-
-        # --------------------------------------------------
-        # calcular NDVI médio por célula (zonal statistics)
-        # --------------------------------------------------
-
-        zonal_result = compute_zonal_ndvi(
-            ndvi,
-            transform,
-            grid,
-            raster_crs,
-        )
-
-
-        # --------------------------------------------------
-        # adicionar data
-        # --------------------------------------------------
-
-        zonal_result["date"] = date
-
-
-        # --------------------------------------------------
-        # manter apenas colunas necessárias
-        # --------------------------------------------------
-
-        zonal_result = zonal_result[
-            ["cell_id", "date", "ndvi_mean"]
+        futures = [
+            executor.submit(process_image, item, aoi, grid)
+            for item in items
         ]
 
+        for f in futures:
 
-        # armazenar resultado
-        all_results.append(zonal_result)
+            result = f.result()
+
+            if result is not None:
+                all_results.append(result)
 
 
     # --------------------------------------------------
-    # 6️⃣ Construir dataset temporal completo
+    # 5️⃣ construir dataset temporal
     # --------------------------------------------------
 
     if len(all_results) == 0:
@@ -138,7 +129,7 @@ def main():
 
 
     # --------------------------------------------------
-    # 7️⃣ Salvar dataset
+    # 6️⃣ salvar dataset
     # --------------------------------------------------
 
     dataset.to_csv("ndvi_timeseries.csv", index=False)
@@ -148,4 +139,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
