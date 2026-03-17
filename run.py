@@ -1,154 +1,140 @@
+"""
+MAIN PIPELINE
+=============
+
+Pipeline dividido em duas fases:
+
+1️⃣ Download rasters (sequencial)
+2️⃣ Processamento NDVI (paralelo)
+
+Isso evita:
+
+    • corrupção de arquivos
+    • downloads duplicados
+    • gargalo de rede
+"""
+
 import time
-import pandas as pd
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from src.ingestion.aoi_loader import load_aoi
-from src.utils.geometry_utils import generate_adaptive_grid
-from src.satellite.stac_client import search_sentinel_items
+from src.utils.raster_cache import get_cached_raster
 from src.indices.ndvi_calculator import calculate_ndvi
-from src.analysis.zonal_ndvi import compute_zonal_ndvi
+from src.grid.grid_builder import generate_grid
+from src.data.sentinel_fetcher import fetch_sentinel_items
+from src.utils.dataset_builder import build_dataset
 
 
-def process_image(item, aoi, grid):
+def download_all_rasters(items):
+    """
+    Baixa todos os rasters necessários antes do processamento.
+
+    Isso garante que o processamento paralelo não dependa de rede.
+    """
+
+    print("\nDownloading rasters...\n")
+
+    for item in items:
+
+        assets = item.assets
+
+        # red band
+        get_cached_raster(assets["B04"].href)
+
+        # nir band
+        get_cached_raster(assets["B08"].href)
+
+        # scene classification
+        get_cached_raster(assets["SCL"].href)
+
+
+def process_image(item, aoi):
     """
     Processa uma única imagem Sentinel.
 
     Etapas:
-    1) calcula NDVI
-    2) executa zonal statistics no grid
-    3) retorna dataframe com cell_id, date, ndvi_mean
-    """
-    start = time.perf_counter() #medir tempo de processamento da imagem
 
-    # data da imagem
-    date = item.properties["datetime"][:10]
+        abrir rasters
+        calcular NDVI
+        gerar estatísticas por grid
+    """
+
+    start = time.time()
+
+    date = item.datetime.date()
 
     print(f"\nProcessing image: {date}")
 
-    # calcular NDVI
     result = calculate_ndvi(item, aoi)
 
-    if result is None:
-        print("Image skipped (clouds or no intersection)")
-        return None
+    runtime = round(time.time() - start, 2)
 
-    ndvi, transform, raster_crs = result
+    print(f"Image {date} processed in {runtime} seconds")
 
-    print("NDVI calculated:", ndvi.shape)
-
-    # calcular NDVI médio por célula
-    zonal_result = compute_zonal_ndvi(
-        ndvi,
-        transform,
-        grid,
-        raster_crs,
-    )
-
-    # adicionar data
-    zonal_result["date"] = date
-
-    # manter apenas colunas necessárias
-    zonal_result = zonal_result[
-        ["cell_id", "date", "ndvi_mean"]
-    ]
-    end = time.perf_counter() #medir tempo de processamento da imagem
-    print(f"Image {date} processed in {round(end-start,2)} seconds")
-
-    return zonal_result
+    return result
 
 
 def main():
 
-    pipeline_start = time.perf_counter() #medir tempo total do pipeline
+    pipeline_start = time.time()
 
-    # --------------------------------------------------
-    # 1️⃣ carregar AOI
-    # --------------------------------------------------
+    # -------------------------------------------------
+    # carregar AOI
+    # -------------------------------------------------
 
-    aoi = load_aoi("data/raw/aoi_amazonia.kml")
+    aoi = generate_grid()
 
-    print(aoi)
+    print(f"Grid generated with {len(aoi)} cells")
 
+    # -------------------------------------------------
+    # buscar imagens Sentinel
+    # -------------------------------------------------
 
-    # --------------------------------------------------
-    # 2️⃣ gerar grid adaptativo
-    # --------------------------------------------------
+    items = fetch_sentinel_items()
 
-    grid = generate_adaptive_grid(aoi)
+    print(f"Sentinel images found: {len(items)}")
 
-    print(f"Grid generated with {len(grid)} cells")
+    # -------------------------------------------------
+    # STAGE 1 — DOWNLOAD
+    # -------------------------------------------------
 
+    download_all_rasters(items)
 
-    # --------------------------------------------------
-    # 3️⃣ buscar imagens Sentinel
-    # --------------------------------------------------
+    # -------------------------------------------------
+    # STAGE 2 — PROCESSAMENTO PARALELO
+    # -------------------------------------------------
 
-    items = search_sentinel_items(
-        aoi,
-        start_date="2023-01-01",
-        end_date="2023-12-31",
-    )
-
-    print("Sentinel images found:", len(items))
-
-    if len(items) == 0:
-        print("No Sentinel images found")
-        return
-
-
-    # --------------------------------------------------
-    # 4️⃣ processar imagens em paralelo
-    # --------------------------------------------------
-
-    all_results = []
+    results = []
 
     with ThreadPoolExecutor(max_workers=4) as executor:
 
         futures = [
-            executor.submit(process_image, item, aoi, grid)
+            executor.submit(process_image, item, aoi)
             for item in items
         ]
 
-        for f in futures:
+        for f in as_completed(futures):
+            results.append(f.result())
 
-            result = f.result()
+    # -------------------------------------------------
+    # construir dataset final
+    # -------------------------------------------------
 
-            if result is not None:
-                all_results.append(result)
+    dataset = build_dataset(results)
 
+    print("\nDataset preview:\n")
 
-    # --------------------------------------------------
-    # 5️⃣ construir dataset temporal
-    # --------------------------------------------------
-
-    if len(all_results) == 0:
-
-        print("No valid NDVI results")
-        return
-
-    dataset = pd.concat(all_results)
-
-    print("\nDataset preview:")
     print(dataset.head())
 
-    print("\nTotal records:", len(dataset))
-
-
-    # --------------------------------------------------
-    # 6️⃣ salvar dataset
-    # --------------------------------------------------
+    print(f"\nTotal records: {len(dataset)}")
 
     dataset.to_csv("ndvi_timeseries.csv", index=False)
 
     print("\nDataset saved: ndvi_timeseries.csv")
 
+    runtime = round(time.time() - pipeline_start, 2)
 
-    # --------------------------------------------------
-    #  medir tempo total do pipeline
-    # --------------------------------------------------    
-    pipeline_end = time.perf_counter()
+    print(f"\nPipeline runtime: {runtime} seconds")
 
-    print("\nPipeline runtime:", round(pipeline_end - pipeline_start, 2), "seconds")
 
 if __name__ == "__main__":
     main()
