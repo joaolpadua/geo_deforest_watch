@@ -1,9 +1,10 @@
 import pandas as pd
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from src.ingestion.aoi_loader import load_aoi
 from src.utils.geometry_utils import generate_adaptive_grid
 from src.satellite.stac_client import search_sentinel_items
+from src.satellite.item_selection import select_best_items_per_day
 from src.indices.ndvi_calculator import calculate_ndvi
 from src.analysis.zonal_ndvi import compute_zonal_ndvi
 
@@ -27,12 +28,12 @@ def process_image(item, aoi, grid):
     result = calculate_ndvi(item, aoi)
 
     if result is None:
-        print("Image skipped (clouds or no intersection)")
+        print(f"Image {date} skipped (clouds or no intersection)")
         return None
 
     ndvi, transform, raster_crs = result
 
-    print("NDVI calculated:", ndvi.shape)
+    print(f"NDVI calculated: {ndvi.shape}")
 
     # calcular NDVI médio por célula
     zonal_result = compute_zonal_ndvi(
@@ -63,7 +64,6 @@ def main():
 
     print(aoi)
 
-
     # --------------------------------------------------
     # 2️⃣ gerar grid adaptativo
     # --------------------------------------------------
@@ -71,7 +71,6 @@ def main():
     grid = generate_adaptive_grid(aoi)
 
     print(f"Grid generated with {len(grid)} cells")
-
 
     # --------------------------------------------------
     # 3️⃣ buscar imagens Sentinel
@@ -89,9 +88,18 @@ def main():
         print("No Sentinel images found")
         return
 
+    # --------------------------------------------------
+    # 4️⃣ deduplicar imagens por data
+    # --------------------------------------------------
+
+    items = select_best_items_per_day(items)
+
+    if len(items) == 0:
+        print("No valid items after deduplication")
+        return
 
     # --------------------------------------------------
-    # 4️⃣ processar imagens em paralelo
+    # 5️⃣ processar imagens em paralelo
     # --------------------------------------------------
 
     all_results = []
@@ -103,16 +111,16 @@ def main():
             for item in items
         ]
 
-        for f in futures:
+        # usar as_completed → melhor performance e controle
+        for f in as_completed(futures):
 
             result = f.result()
 
             if result is not None:
                 all_results.append(result)
 
-
     # --------------------------------------------------
-    # 5️⃣ construir dataset temporal
+    # 6️⃣ construir dataset temporal
     # --------------------------------------------------
 
     if len(all_results) == 0:
@@ -120,16 +128,18 @@ def main():
         print("No valid NDVI results")
         return
 
-    dataset = pd.concat(all_results)
+    dataset = pd.concat(all_results, ignore_index=True)
+
+    # ordenar corretamente (muito importante pra análise temporal)
+    dataset = dataset.sort_values(["cell_id", "date"])
 
     print("\nDataset preview:")
     print(dataset.head())
 
     print("\nTotal records:", len(dataset))
 
-
     # --------------------------------------------------
-    # 6️⃣ salvar dataset
+    # 7️⃣ salvar dataset
     # --------------------------------------------------
 
     dataset.to_csv("ndvi_timeseries.csv", index=False)
