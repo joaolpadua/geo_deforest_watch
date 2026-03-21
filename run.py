@@ -33,7 +33,7 @@ def process_image(item, aoi, grid):
 
     ndvi, transform, raster_crs = result
 
-    print(f"NDVI calculated: {ndvi.shape}")
+    print(f"[{date}] NDVI calculated: {ndvi.shape}")
 
     # calcular NDVI médio por célula
     zonal_result = compute_zonal_ndvi(
@@ -101,6 +101,11 @@ def main():
     # --------------------------------------------------
     # 5️⃣ processar imagens em paralelo
     # --------------------------------------------------
+    print("\nItens finais após dedup:")
+    for item in items:
+        print(item.datetime.date())
+
+
 
     all_results = []
 
