@@ -29,10 +29,16 @@ def compute_zonal_ndvi(ndvi, transform, grid, raster_crs):
 
         pixels = ndvi[mask]
 
-        if pixels.size == 0:
+        valid_pixels = pixels[
+            (~np.isnan(pixels)) &
+            (pixels > 0.1) &
+            (pixels <= 1)
+        ]
+
+        if valid_pixels.size == 0:
             mean_ndvi = np.nan
         else:
-            mean_ndvi = np.nanmean(pixels)
+            mean_ndvi = valid_pixels.mean()
 
         results.append(mean_ndvi)
 
