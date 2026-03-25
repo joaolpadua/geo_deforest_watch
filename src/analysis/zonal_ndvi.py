@@ -39,7 +39,7 @@ def compute_zonal_ndvi(ndvi, transform, grid, raster_crs):
             mean_ndvi = np.nan
         else:
             mean_ndvi = valid_pixels.mean()
-
+           
         results.append(mean_ndvi)
 
     grid_result = grid_proj.copy()
