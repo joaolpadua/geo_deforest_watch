@@ -92,7 +92,7 @@ def main():
     items = search_sentinel_items(
         aoi,
         start_date="2023-01-01",
-        end_date="2023-12-31",
+        end_date="2026-03-20",
     )
 
     print("Sentinel images found:", len(items))
