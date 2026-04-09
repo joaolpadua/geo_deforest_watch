@@ -2,10 +2,15 @@ import pandas as pd
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# ingestão
 from src.ingestion.aoi_loader import load_aoi
 from src.utils.geometry_utils import generate_adaptive_grid
+
+# satélite
 from src.satellite.stac_client import search_sentinel_items
 from src.satellite.item_selection import select_best_items_per_day
+
+# NDVI
 from src.indices.ndvi_calculator import calculate_ndvi
 from src.analysis.zonal_ndvi import compute_zonal_ndvi
 
@@ -20,11 +25,13 @@ from src.visualization.map_visualizer import (
     plot_alert_map
 )
 
-
 # ---------------------------------------------------------
 # CLASSIFICAÇÃO DE ALERTA
 # ---------------------------------------------------------
 def classify_alert(row):
+    """
+    Classifica severidade com base na queda de NDVI
+    """
     if row["ndvi_drop"] >= 0.25:
         return "CRÍTICO"
     elif row["ndvi_drop"] >= 0.15:
@@ -34,12 +41,47 @@ def classify_alert(row):
     else:
         return "NORMAL"
 
+
+# ---------------------------------------------------------
+# FILTRO DE MEMÓRIA TEMPORAL (ANTI-RUÍDO)
+# ---------------------------------------------------------
+def apply_temporal_memory(df, window=3):
+    """
+    Mantém alertas apenas se persistirem ao longo do tempo.
+
+    window=3 → precisa aparecer em 3 timestamps consecutivos
+    """
+
+    df = df.copy()
+
+    def process_group(group):
+        group = group.sort_values("date")
+
+        # soma de alertas dentro da janela temporal
+        group["alert_smooth"] = (
+            group["alert"]
+            .rolling(window=window, min_periods=1)
+            .sum()
+        ) >= window
+
+        return group
+
+    df = df.groupby("cell_id", group_keys=False).apply(process_group)
+
+    return df
+
+
 # ---------------------------------------------------------
 # PROCESSAMENTO DE UMA IMAGEM
 # ---------------------------------------------------------
 def process_image(item, aoi, grid):
-    date = item.properties["datetime"][:10]
+    """
+    Processa 1 imagem Sentinel:
+    - calcula NDVI
+    - faz zonal stats por célula
+    """
 
+    date = item.properties["datetime"][:10]
     print(f"\nProcessing image: {date}")
 
     result = calculate_ndvi(item, aoi)
@@ -51,8 +93,6 @@ def process_image(item, aoi, grid):
     ndvi, transform, raster_crs = result
 
     print(f"[{date}] NDVI calculated: {ndvi.shape}")
-
-    # debug (pode comentar depois)
     print("NDVI bruto:", np.nanmin(ndvi), np.nanmax(ndvi))
 
     zonal_result = compute_zonal_ndvi(
@@ -68,7 +108,7 @@ def process_image(item, aoi, grid):
 
 
 # ---------------------------------------------------------
-# MAIN
+# MAIN PIPELINE
 # ---------------------------------------------------------
 def main():
 
@@ -81,7 +121,7 @@ def main():
     print(aoi)
 
     # --------------------------------------------------
-    # 2️⃣ gerar grid
+    # 2️⃣ gerar grid (divisão espacial)
     # --------------------------------------------------
     grid = generate_adaptive_grid(aoi)
     print(f"Grid generated with {len(grid)} cells")
@@ -91,7 +131,7 @@ def main():
     # --------------------------------------------------
     items = search_sentinel_items(
         aoi,
-        start_date="2023-01-01",
+        start_date="2020-01-01",
         end_date="2026-03-20",
     )
 
@@ -102,11 +142,11 @@ def main():
         return
 
     # --------------------------------------------------
-    # 4️⃣ deduplicar
+    # 4️⃣ deduplicar (1 imagem por dia)
     # --------------------------------------------------
     items = select_best_items_per_day(items)
 
-    print("\nItens finais após dedup:")
+    print("\nDatas finais:")
     for item in items:
         print(item.datetime.date())
 
@@ -124,7 +164,6 @@ def main():
 
         for f in as_completed(futures):
             result = f.result()
-
             if result is not None:
                 all_results.append(result)
 
@@ -143,30 +182,39 @@ def main():
     print("\nTotal records:", len(dataset))
 
     # --------------------------------------------------
-    # 7️⃣ mudança NDVI
+    # 7️⃣ cálculo de variação NDVI
     # --------------------------------------------------
     print("\nCalculando variação NDVI...")
     dataset = compute_ndvi_change(dataset)
 
     # --------------------------------------------------
-    # 8️⃣ detecção
+    # 8️⃣ detecção de desmatamento
     # --------------------------------------------------
-    print("Detectando possíveis eventos de desmatamento...")
+    print("Detectando possíveis eventos...")
     dataset = detect_deforestation(dataset)
 
     # --------------------------------------------------
-    # 🔟 classificação de alerta
+    # 9️⃣ filtro de persistência (REMOVE RUÍDO)
+    # --------------------------------------------------
+    print("Aplicando persistência temporal...")
+
+    dataset = apply_temporal_memory(dataset, window=3)
+
+    # substitui alert pelo suavizado
+    dataset["alert"] = dataset["alert_smooth"]
+
+    # --------------------------------------------------
+    # 🔟 classificação de severidade
     # --------------------------------------------------
     dataset["alert_level"] = dataset.apply(classify_alert, axis=1)
 
     # --------------------------------------------------
-    # análise
+    # análise rápida
     # --------------------------------------------------
     alerts = dataset[dataset["alert"] == True]
 
     print("\nAlerts preview:")
     print(alerts.head())
-
     print("\nTotal alerts:", alerts.shape[0])
 
     # --------------------------------------------------
@@ -175,10 +223,8 @@ def main():
     dataset.to_csv("ndvi_with_alerts.csv", index=False)
     print("\nDataset salvo: ndvi_with_alerts.csv")
 
-    print(dataset["ndvi_mean"].describe())
-
     # --------------------------------------------------
-    # gráfico de uma célula
+    # gráfico exemplo (debug visual)
     # --------------------------------------------------
     import matplotlib.pyplot as plt
 
@@ -198,11 +244,14 @@ def main():
     plt.show()
 
     # --------------------------------------------------
-    # 🗺️ gerar mapas + GIF
+    # 🗺️ mapas NDVI
     # --------------------------------------------------
     print("\nGerando mapas NDVI...")
     generate_ndvi_frames(grid, dataset)
 
+    # --------------------------------------------------
+    # 🎞️ GIF temporal
+    # --------------------------------------------------
     print("\nGerando GIF...")
     create_gif()
 
@@ -213,9 +262,9 @@ def main():
     plot_alert_map(grid, dataset)
 
     # --------------------------------------------------
-    # 🌍 export geoespacial (GeoJSON)
+    # 🌍 export GeoJSON (uso real)
     # --------------------------------------------------
-    print("\nExportando GeoJSON de alertas...")
+    print("\nExportando GeoJSON...")
 
     alerts_geo = grid.merge(dataset, on="cell_id")
     alerts_geo = alerts_geo[alerts_geo["alert"] == True]
