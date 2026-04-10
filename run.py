@@ -131,7 +131,7 @@ def main():
     # --------------------------------------------------
     items = search_sentinel_items(
         aoi,
-        start_date="2020-01-01",
+        start_date="2016-01-01",
         end_date="2026-03-20",
     )
 
@@ -194,22 +194,12 @@ def main():
     dataset = detect_deforestation(dataset)
 
     # --------------------------------------------------
-    # 9️⃣ filtro de persistência (REMOVE RUÍDO)
-    # --------------------------------------------------
-    print("Aplicando persistência temporal...")
-
-    dataset = apply_temporal_memory(dataset, window=3)
-
-    # substitui alert pelo suavizado
-    dataset["alert"] = dataset["alert_smooth"]
-
-    # --------------------------------------------------
-    # 🔟 classificação de severidade
+    # 9️⃣ classificação de severidade
     # --------------------------------------------------
     dataset["alert_level"] = dataset.apply(classify_alert, axis=1)
 
     # --------------------------------------------------
-    # análise rápida
+    # 10️⃣ análise rápida
     # --------------------------------------------------
     alerts = dataset[dataset["alert"] == True]
 

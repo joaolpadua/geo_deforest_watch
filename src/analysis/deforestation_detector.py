@@ -3,8 +3,8 @@ import pandas as pd
 
 def detect_deforestation(
     df: pd.DataFrame,
-    drop_threshold: float = 0.15,
-    persistence_window: int = 2,
+    drop_threshold: float = 0.18,
+    persistence_window: int = 3,
 ) -> pd.DataFrame:
     """
     Detecta possíveis eventos de desmatamento com base na queda de NDVI.
@@ -36,6 +36,9 @@ def detect_deforestation(
 
                 current_value = group.loc[i, "ndvi_mean"]
 
+                    # 🔥 NOVO: só alerta se já estiver baixo
+                if current_value > 0.5:
+                    continue
                 # olhar os próximos pontos
                 future_values = group.loc[
                     i : i + persistence_window, "ndvi_mean"
